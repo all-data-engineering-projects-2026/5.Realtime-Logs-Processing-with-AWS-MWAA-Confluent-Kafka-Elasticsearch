@@ -1,0 +1,4 @@
+boto3==1.43.34
+confluent-kafka==2.14.2
+elasticsearch==9.4.1
+Faker==40.23.0
