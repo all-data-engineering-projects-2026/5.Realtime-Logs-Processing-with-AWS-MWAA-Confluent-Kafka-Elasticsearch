@@ -1,0 +1,9 @@
+logs/
+*.cfg
+*.db
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.idea/
+simple_auth_manager_passwords.json.generated
