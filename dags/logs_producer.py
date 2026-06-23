@@ -118,7 +118,7 @@ def produce_logs(**context):
     producer = create_kafka_producer(kafka_config)
     topic = 'billion_website_logs'
 
-    for _ in range(50):
+    for _ in range(500):
         log = generate_log()
         try:
             producer.produce(topic, log.encode('utf-8'), on_delivery=delivery_report)
