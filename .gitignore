@@ -7,3 +7,5 @@ __pycache__/
 .DS_Store
 .idea/
 simple_auth_manager_passwords.json.generated
+airflow.db-shm
+airflow.db-wal
