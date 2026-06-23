@@ -7,16 +7,14 @@ import boto3
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from botocore.exceptions import ClientError
-from confluent_kafka import Consumer, KafkaException, KafkaError
-from elasticsearch import Elasticsearch, helpers
+from confluent_kafka import Consumer, KafkaError, KafkaException
+from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
-
-# from dags.utils import get_secret
 
 logger = logging.getLogger(__name__)
 
 def get_secret(secret_name, region_name='us-east-1'):
-    """Retrieve secrets from AWS secret Manager"""
+    """Retrieve secrets from AWS Secrets Manager"""
     session = boto3.session.Session()
     client = session.client(service_name='secretsmanager', region_name=region_name)
     try:
@@ -34,7 +32,6 @@ def parse_log_entry(log_entry):
         return None
 
     data = match.groupdict()
-
     try:
         parsed_timestamp = datetime.strptime(data['timestamp'], '%b %d %Y, %H:%M:%S')
         data['@timestamp'] = parsed_timestamp.isoformat()
@@ -43,7 +40,6 @@ def parse_log_entry(log_entry):
         return None
 
     return data
-
 
 def consume_and_index_logs(**context):
     secrets = get_secret("MWAA_Secrets_V2")
@@ -58,13 +54,12 @@ def consume_and_index_logs(**context):
         'auto.offset.reset': 'latest'
     }
 
-    es_config = {
-        'hosts': [secrets['ELASTICSEARCH_URL']],
-        'api_key': secrets['ELASTICSEARCH_API_KEY']
-    }
+    es = Elasticsearch(
+        hosts=[secrets['ELASTICSEARCH_URL']],
+        api_key=secrets['ELASTICSEARCH_API_KEY']
+    )
 
     consumer = Consumer(consumer_config)
-    es = Elasticsearch(**es_config)
     topic = 'billion_website_logs'
     consumer.subscribe([topic])
 
@@ -73,83 +68,77 @@ def consume_and_index_logs(**context):
         if not es.indices.exists(index=index_name):
             es.indices.create(index=index_name)
             logger.info(f'Created index: {index_name}')
-    except Exception as e:
-        logger.error(f"Failed to create index: {index_name}")
 
-    try:
         logs = []
-        while True:
+        max_messages = 100  # Safety limit
+
+        for _ in range(max_messages):
             msg = consumer.poll(timeout=1.0)
             if msg is None:
-                break
+                continue
 
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
-                    break
-                raise KafkaException(msg.error())
+                    continue
+                logger.error(f"Kafka error: {msg.error()}")
+                break
 
             log_entry = msg.value().decode('utf-8')
-            parsed_log = parse_log_entry(log_entry)
+            # parsed_log = parse_log_entry(log_entry)
+            #
+            # if parsed_log:
+            #     logs.append(parsed_log)
 
-            if parsed_log:
-                logs.append(parsed_log)
+            # Index raw log directly (no parsing temporary)
+            doc = {
+                "raw_log": log_entry,
+                "@timestamp": datetime.utcnow().isoformat()
+            }
+            logs.append(doc)
 
-            # index when 500 logs are collected
-            if len(logs) >= 500:
+            if len(logs) >= 50:
                 actions = [
-                    {
-                        '_op_type': 'create',
-                        '_index': index_name,
-                        '_source': log
-                    }
+                    {'_op_type': 'create', '_index': index_name, '_source': log}
                     for log in logs
                 ]
-
                 success, failed = bulk(es, actions, refresh=True)
                 logger.info(f'Indexed {success} logs, {len(failed)} failed')
                 logs = []
-    except Exception as e:
-        logger.error(f"Failed to index log : {e}")
 
-    try:
-        # index and remaining logs
+        # Remaining logs
         if logs:
             actions = [
-                {
-                    '_op_type': 'create',
-                    '_index': index_name,
-                    '_source': log
-                }
+                {'_op_type': 'create', '_index': index_name, '_source': log}
                 for log in logs
             ]
             bulk(es, actions, refresh=True)
+
     except Exception as e:
-        logger.error(f'Log processing error: {e}')
+        logger.error(f"Error in consume_and_index_logs: {e}")
     finally:
         consumer.close()
         es.close()
 
-
+# DAG Definition
 default_args = {
     'owner': 'himanshu_airflow',
     'depends_on_past': False,
     'email_on_failure': False,
     'retries': 1,
-    'retry_delay': timedelta(seconds=5),
+    'retry_delay': timedelta(minutes=1),
 }
 
-dag = DAG(
-    'log_consumer_pipeline',
+with DAG(
+    dag_id='log_consumer_pipeline',
     default_args=default_args,
     description="Consume and Index synthetic logs",
-    schedule="*/5 * * * *",
+    schedule='*/5 * * * *',
     start_date=datetime(2026, 6, 22),
     catchup=False,
-    tags={'logs', 'kafka', 'production'}
-)
+    tags={'logs', 'kafka', 'elasticsearch'},
+) as dag:
 
-consume_logs_task = PythonOperator(
-    task_id='generate_and_consume_logs',
-    python_callable=consume_and_index_logs,
-    dag=dag,
-)
+    consume_logs_task = PythonOperator(
+        task_id='generate_and_consume_logs',
+        python_callable=consume_and_index_logs,
+    )
