@@ -13,6 +13,7 @@ from elasticsearch.helpers import bulk
 
 logger = logging.getLogger(__name__)
 
+
 def get_secret(secret_name, region_name='us-east-1'):
     """Retrieve secrets from AWS Secrets Manager"""
     session = boto3.session.Session()
@@ -24,9 +25,10 @@ def get_secret(secret_name, region_name='us-east-1'):
         logger.error(f"Secret retrieval error : {e}")
         raise
 
+
 def parse_log_entry(log_entry):
-    log_pattern = r'(?P<ip>[\d.]+) - - \[(?P<timestamp>.*)\] "(?P<method>\w+) (?P<endpoint>[\w/]+) (?P<protocol>[\w/\.]+)'
-    match = re.match(log_pattern, log_entry)
+    log_pattern = r'(?P<ip>[\d.]+) - - \[(?P<timestamp>[^\]]+)\] (?P<method>\w+) (?P<endpoint>[\w/]+)'
+    match = re.search(log_pattern, log_entry)
     if not match:
         logger.warning(f"Invalid log format: {log_entry}")
         return None
@@ -40,6 +42,7 @@ def parse_log_entry(log_entry):
         return None
 
     return data
+
 
 def consume_and_index_logs(**context):
     secrets = get_secret("MWAA_Secrets_V2")
@@ -70,7 +73,7 @@ def consume_and_index_logs(**context):
             logger.info(f'Created index: {index_name}')
 
         logs = []
-        max_messages = 100  # Safety limit
+        max_messages = 200
 
         for _ in range(max_messages):
             msg = consumer.poll(timeout=1.0)
@@ -84,17 +87,10 @@ def consume_and_index_logs(**context):
                 break
 
             log_entry = msg.value().decode('utf-8')
-            # parsed_log = parse_log_entry(log_entry)
-            #
-            # if parsed_log:
-            #     logs.append(parsed_log)
+            parsed_log = parse_log_entry(log_entry)
 
-            # Index raw log directly (no parsing temporary)
-            doc = {
-                "raw_log": log_entry,
-                "@timestamp": datetime.utcnow().isoformat()
-            }
-            logs.append(doc)
+            if parsed_log:
+                logs.append(parsed_log)
 
             if len(logs) >= 50:
                 actions = [
@@ -119,6 +115,7 @@ def consume_and_index_logs(**context):
         consumer.close()
         es.close()
 
+
 # DAG Definition
 default_args = {
     'owner': 'himanshu_airflow',
@@ -129,15 +126,14 @@ default_args = {
 }
 
 with DAG(
-    dag_id='log_consumer_pipeline',
-    default_args=default_args,
-    description="Consume and Index synthetic logs",
-    schedule='*/5 * * * *',
-    start_date=datetime(2026, 6, 22),
-    catchup=False,
-    tags={'logs', 'kafka', 'elasticsearch'},
+        dag_id='log_consumer_pipeline',
+        default_args=default_args,
+        description="Consume and Index synthetic logs",
+        schedule='*/5 * * * *',
+        start_date=datetime(2026, 6, 22),
+        catchup=False,
+        tags={'logs', 'kafka', 'elasticsearch'},
 ) as dag:
-
     consume_logs_task = PythonOperator(
         task_id='generate_and_consume_logs',
         python_callable=consume_and_index_logs,
