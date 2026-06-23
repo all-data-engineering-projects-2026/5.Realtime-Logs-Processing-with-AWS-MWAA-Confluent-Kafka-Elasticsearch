@@ -7,7 +7,7 @@ import boto3
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from botocore.exceptions import ClientError
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, KafkaException, KafkaError
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.helpers import bulk
 
@@ -74,7 +74,7 @@ def consume_and_index_logs(**context):
             es.indices.create(index=index_name)
             logger.info(f'Created index: {index_name}')
     except Exception as e:
-        logger.error(f"Failed to create index:{index_name}")
+        logger.error(f"Failed to create index: {index_name}")
 
     try:
         logs = []
@@ -84,7 +84,7 @@ def consume_and_index_logs(**context):
                 break
 
             if msg.error():
-                if msg.error().code() == KafkaException._PARTITION_EOF:
+                if msg.error().code() == KafkaError._PARTITION_EOF:
                     break
                 raise KafkaException(msg.error())
 
@@ -138,20 +138,18 @@ default_args = {
     'retry_delay': timedelta(seconds=5),
 }
 
-# dag = DAG(
-#     'log_consumer_pipeline',
-#     default_args=default_args,
-#     description="Consume and Index synthetic logs",
-#     schedule="*/5 * * * *",
-#     start_date=datetime(2026, 6, 22),
-#     catchup=False,
-#     tags={'logs', 'kafka', 'production'}
-# )
-#
-# consume_logs_task = PythonOperator(
-#     task_id='generate_and_consume_logs',
-#     python_callable=consume_and_index_logs,
-#     dag=dag,
-# )
+dag = DAG(
+    'log_consumer_pipeline',
+    default_args=default_args,
+    description="Consume and Index synthetic logs",
+    schedule="*/5 * * * *",
+    start_date=datetime(2026, 6, 22),
+    catchup=False,
+    tags={'logs', 'kafka', 'production'}
+)
 
-consume_and_index_logs()
+consume_logs_task = PythonOperator(
+    task_id='generate_and_consume_logs',
+    python_callable=consume_and_index_logs,
+    dag=dag,
+)
